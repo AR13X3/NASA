@@ -14,12 +14,11 @@ const monthsFrom = (start, len) => Array.from({ length: len }, (_, i) => (start 
 
 // ---------------------------------------------------------------- crop fit --
 
-// Finds the growing window (consecutive months, wrapping over the year end)
-// whose mean temperature best matches the crop. `allowed` restricts the months
-// the window may use, e.g. a cover crop must fit between two cash crops.
-export function bestWindow(crop, climate, allowed = null) {
-  const target = (crop.tMin + crop.tMax) / 2;
-  let best = null;
+// Candidate growing windows: consecutive months (wrapping over the year end, so
+// the southern hemisphere works) that the crop can survive. `allowed` restricts
+// the months a window may use, e.g. a cover crop must fit between cash crops.
+function candidateWindows(crop, climate, allowed) {
+  const out = [];
   for (let start = 0; start < 12; start++) {
     const months = monthsFrom(start, crop.months);
     if (allowed && !months.every((m) => allowed.has(m))) continue;
@@ -31,30 +30,30 @@ export function bestWindow(crop, climate, allowed = null) {
       const autumn = climate.tMean[(start + 11) % 12] > sow && sow >= 5;
       if (!autumn || climate.tMean[months[months.length - 1]] <= sow) continue;
     }
-    const temp = mean(months.map((m) => climate.tMean[m]));
-    const rain = months.reduce((a, m) => a + climate.precip[m], 0);
-    const dist = Math.abs(temp - target);
-    if (!best || dist < best.dist - 1e-9 || (Math.abs(dist - best.dist) < 1e-9 && rain > best.rain)) {
-      best = { start, months, temp, rain, dist };
-    }
+    out.push({
+      start,
+      months,
+      temp: mean(months.map((m) => climate.tMean[m])),
+      rain: months.reduce((a, m) => a + climate.precip[m], 0),
+      // Rain in the three months before sowing refills the soil profile.
+      preRain: [1, 2, 3].reduce((a, k) => a + climate.precip[(start + 12 - k) % 12], 0),
+    });
   }
-  return best;
+  return out;
 }
 
-export function cropSuitability(crop, climate, soil, { irrigated = false, allowed = null } = {}) {
-  const win = bestWindow(crop, climate, allowed);
-  if (!win) {
-    return { score: 0, temp: 0, heat: 0, water: 0, soilFit: 0, window: null, supply: 0, irrigationNeed: 0, limits: ['too cold for any growing window'] };
-  }
-
+// Scores one crop in one growing window.
+function evaluateWindow(crop, win, climate, soil, irrigated) {
   const tDist = win.temp < crop.tMin ? crop.tMin - win.temp : win.temp > crop.tMax ? win.temp - crop.tMax : 0;
   const temp = clamp(1 - tDist / 6);
 
   const peakHeat = Math.max(...win.months.map((m) => climate.tMax[m]));
   const heat = clamp(1 - Math.max(0, peakHeat - crop.heatLimit) / 8);
 
-  // ~75 % of rain is effective; stored soil water in the root zone tops it up.
-  const stored = soil.awc * Math.min(crop.rootDepth, 1.5) * 0.5;
+  // ~75 % of in-season rain is effective. The root zone starts partly full,
+  // topped up by pre-season rain (how dryland crops live on winter rain).
+  const capacity = soil.awc * Math.min(crop.rootDepth, 1.5);
+  const stored = Math.min(capacity, 0.3 * capacity + 0.5 * win.preRain);
   const supply = win.rain * 0.75 + stored;
   const ratio = supply / crop.waterNeed;
   const irrigationNeed = Math.max(0, crop.waterNeed - supply);
@@ -62,8 +61,9 @@ export function cropSuitability(crop, climate, soil, { irrigated = false, allowe
   // Too much water on poorly drained soil hurts crops that hate wet feet.
   if (ratio > 2 && soil.drainage === 'poor') water *= 1 - (1 - crop.waterlogTol) * 0.4;
 
+  // pH can be corrected (lime, sulfur), so it weighs less than texture.
   const phDist = soil.ph < crop.phMin ? crop.phMin - soil.ph : soil.ph > crop.phMax ? soil.ph - crop.phMax : 0;
-  const soilFit = clamp(1 - phDist / 1.5) * (0.4 + 0.6 * (crop.texture[soil.texture] ?? 0.7));
+  const soilFit = clamp(1 - phDist / 2.5) * (0.4 + 0.6 * (crop.texture[soil.texture] ?? 0.7));
 
   // Liebig-style: the most limiting factor dominates, the rest still count.
   const factors = { temp, heat, water, soilFit };
@@ -73,9 +73,29 @@ export function cropSuitability(crop, climate, soil, { irrigated = false, allowe
   if (temp < 0.7) limits.push(win.temp < crop.tMin ? 'season too cool' : 'season too hot');
   if (heat < 0.7) limits.push('heat stress at peak');
   if (water < 0.7) limits.push('rainfall too low');
-  if (soilFit < 0.7) limits.push(phDist > 0 ? `soil pH ${soil.ph} outside ${crop.phMin}–${crop.phMax}` : `${soil.texture} soil not ideal`);
+  if (soilFit < 0.7) {
+    if (phDist > 0) limits.push(`soil pH ${soil.ph} outside ${crop.phMin}–${crop.phMax}${soil.ph < crop.phMin ? ' (liming helps)' : ''}`);
+    else limits.push(`${soil.texture} soil not ideal`);
+  }
+  return { score, ...factors, window: win, supply, irrigationNeed, limits, tDist };
+}
 
-  return { score, ...factors, window: win, supply, irrigationNeed, limits };
+// Finds the crop's best growing season at this site and scores it there.
+export function cropSuitability(crop, climate, soil, { irrigated = false, allowed = null } = {}) {
+  let best = null;
+  for (const win of candidateWindows(crop, climate, allowed)) {
+    const r = evaluateWindow(crop, win, climate, soil, irrigated);
+    if (!best || r.score > best.score + 1e-9 || (Math.abs(r.score - best.score) < 1e-9 && r.tDist < best.tDist)) best = r;
+  }
+  if (!best) {
+    return { score: 0, temp: 0, heat: 0, water: 0, soilFit: 0, window: null, supply: 0, irrigationNeed: 0, limits: ['too cold for any growing window'] };
+  }
+  delete best.tDist;
+  return best;
+}
+
+export function bestWindow(crop, climate, soil, opts) {
+  return cropSuitability(crop, climate, soil, opts).window;
 }
 
 // ------------------------------------------------------------ cover crops --
@@ -191,7 +211,12 @@ export function scoreRotation(ids, ctx) {
   const slots = ids.map((id, i) => {
     const crop = cropById[id];
     const next = cropById[ids[(i + 1) % ids.length]];
-    const cover = useCovers ? chooseCover(crop, next, fit, climate, soil) : null;
+    let cover = null;
+    if (useCovers) {
+      const key = `${crop.id}>${next.id}`;
+      if (!(key in ctx.coverCache)) ctx.coverCache[key] = chooseCover(crop, next, fit, climate, soil);
+      cover = ctx.coverCache[key];
+    }
     return { crop, cover: cover?.crop ?? null };
   });
 
@@ -297,14 +322,22 @@ export function recommend({ climate, soil, priorities = {}, cropIds = null, irri
     stressFit[c.id] = cropSuitability(c, stressClimate, soil, { irrigated });
   }
 
+  // Crops of the same species (e.g. two wheat types) would be the same crop in
+  // a rotation: keep whichever fits better.
+  const bySpecies = {};
+  for (const c of pool) {
+    const k = c.species ?? c.id;
+    if (!bySpecies[k] || fit[c.id].score > fit[bySpecies[k]].score) bySpecies[k] = c.id;
+  }
+
   // Keep the crops that genuinely fit; cap the pool so enumeration stays fast.
   const viable = pool
-    .filter((c) => fit[c.id].score >= 0.5)
+    .filter((c) => fit[c.id].score >= 0.5 && bySpecies[c.species ?? c.id] === c.id)
     .sort((a, b) => fit[b.id].score - fit[a.id].score)
     .slice(0, 12)
     .map((c) => c.id);
 
-  const ctx = { fit, stressFit, climate, soil, useCovers, priorities, irrigated };
+  const ctx = { fit, stressFit, climate, soil, useCovers, priorities, irrigated, coverCache: {} };
   const scored = enumerateRotations(viable, { maxLength })
     .map((ids) => scoreRotation(ids, ctx))
     .sort((a, b) => b.overall - a.overall);

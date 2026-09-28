@@ -63,7 +63,7 @@ test('growing windows wrap over the year end in the southern hemisphere', () => 
     tMax: [...DEMO_CLIMATE.tMax.slice(6), ...DEMO_CLIMATE.tMax.slice(0, 6)],
     precip: [...DEMO_CLIMATE.precip.slice(6), ...DEMO_CLIMATE.precip.slice(0, 6)],
   });
-  const win = bestWindow(cropById.maize, south);
+  const win = bestWindow(cropById.maize, south, loam);
   assert.ok(win.months.includes(0), 'maize grows over January in the south');
   assert.ok(win.months.includes(11));
 });
@@ -104,8 +104,18 @@ test('only offers crops the user selected', () => {
 });
 
 test('winter wheat is sown in autumn and harvested in early summer', () => {
-  const win = bestWindow(cropById['winter-wheat'], demo);
+  const win = bestWindow(cropById['winter-wheat'], demo, loam);
   assert.equal(win.months[0], 9, 'sown in October');
   assert.ok(win.months.includes(0), 'grows through January');
   assert.ok(demo.tMean[win.months.at(-1)] > demo.tMean[win.months[0]], 'ends warmer than it starts');
+});
+
+test('rain-fed crops are placed in the rainy season (Sahel-like climate)', () => {
+  const sahel = profileFromMonthly({
+    tMean: [24, 27, 30, 33, 33, 31, 28, 27, 28, 29, 27, 25],
+    tMax: [32, 35, 38, 41, 41, 38, 34, 32, 34, 37, 36, 33],
+    precip: [0, 0, 2, 8, 35, 75, 150, 190, 90, 15, 0, 0],
+  });
+  const win = bestWindow(cropById.cowpea, sahel, loam);
+  assert.ok(win.months.includes(7), 'cowpea grows through the August rains');
 });

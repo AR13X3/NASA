@@ -6,7 +6,7 @@
 
 1. **Pick your field** on a map (or type coordinates).
 2. **Pull NASA data** for that point: ~15 years of monthly temperature, daily-max heat, rainfall, root-zone soil wetness and sunlight from **NASA POWER**. From this it builds a monthly climate profile and measures the local **warming and rainfall trends**.
-3. **Load soil data** (pH, organic carbon, clay, sand) for the top 30 cm from **ISRIC SoilGrids**. Farmers can overwrite it with their own soil test.
+3. **Load soil data** (pH, organic carbon, clay, sand) for the top 30 cm from **ISRIC SoilGrids** (if the exact point is a town or data gap, the nearest point with data within ~15 km is used). Farmers can overwrite it with their own soil test.
 4. **Say what matters**: soil health, saving water, climate resilience and income, each weighted 0–5. You can also set irrigation, whether to use cover crops, rotation length and which crops you're willing to grow.
 5. **Get ranked rotations** (2–4 year cycles, with off-season cover crops). For each one you get:
    - scores for soil health, water, climate resilience and income
@@ -58,7 +58,7 @@ Endpoint: `https://power.larc.nasa.gov/api/temporal/monthly/point` (community `A
 
 ### Scoring model (short version)
 
-- **Crop suitability**: for each crop, find the best growing window (months in a row, wrapping over the year end so the southern hemisphere works; winter crops must be sown in autumn). Score temperature, heat stress, water (effective rain + stored soil water, adjusted for drought tolerance) and soil (pH, texture). The most limiting factor counts most. The same is done for a **stress-test future**: the NASA-measured trend projected 10 years ahead, but never milder than +1.5 °C and −10 % rain.
+- **Crop suitability**: for each crop, try every possible growing window (months in a row, wrapping over the year end so the southern hemisphere works; winter crops must be sown in autumn) and keep the season where it scores best. Each window is scored on temperature, heat stress, water (effective in-season rain + soil water stored from pre-season rain, adjusted for drought tolerance) and soil (pH, texture). The most limiting factor counts most. This puts rain-fed crops in the rainy season and lets dryland crops live on stored winter rain. The same is done for a **stress-test future**: the NASA-measured trend projected 10 years ahead, but never milder than +1.5 °C and −10 % rain.
 - **Rotation search**: every 2–4 year cycle of the crops that fit (≥ 50 %), with no crop straight after itself and cyclic duplicates removed (~4,000 candidates, under 2 s). The best off-season cover crop is picked for each gap: a legume cover before a nitrogen-hungry crop, cereal rye to catch leftover nitrogen after one.
 - **Soil health**: residue returned, pest/disease breaks (plant families alternating, no crop returning too soon), family diversity, nitrogen balance, cover-crop use, low tillage disturbance.
 - **Water**: how well rain covers the crops' needs, how much water they ask for, and drought tolerance. Needing irrigation is penalized.
